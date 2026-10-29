@@ -1,0 +1,15 @@
+{
+  "name": "osintropic-motor",
+  "version": "1.0.0",
+  "description": "Motor de analisis OSINTropic: cadena gemini -> openrouter -> workers_ai sin techos de Cloudflare Workers",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
