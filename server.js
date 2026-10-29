@@ -37,7 +37,7 @@ function log(...args) {
 async function llamarGemini(modelo, doc, cfg, creds, signal) {
   const base = (cfg.gemini_base || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
   const url = `${base}/models/${encodeURIComponent(modelo)}:generateContent`;
-  const r = await fetch(url, {
+  const hacer = (conThinking) => fetch(url, {
     method: "POST",
     signal,
     headers: {
@@ -53,10 +53,26 @@ async function llamarGemini(modelo, doc, cfg, creds, signal) {
         temperature: 0,
         responseMimeType: "application/json",
         maxOutputTokens: cfg.salida_tokens || 2048,
-        thinkingConfig: { thinkingLevel: "low" },
+        ...(conThinking ? { thinkingConfig: { thinkingLevel: "low" } } : {}),
       },
     }),
   });
+  let r = await hacer(true);
+  if (r.status === 429 || r.status >= 500) {
+    await new Promise((ok) => setTimeout(ok, r.status === 429 ? 1500 : 1000));
+    r = await hacer(true);
+  }
+  if (r.status === 400) {
+    // Algunos modelos lite rechazan thinkingConfig (INVALID_ARGUMENT):
+    // reintento sin thinking, patrón verificado en Vector y en el motor CF.
+    const det = (await r.text()).replace(/\s+/g, " ").slice(0, 160);
+    const r2 = await hacer(false);
+    if (!r2.ok) {
+      const det2 = (await r2.text()).replace(/\s+/g, " ").slice(0, 160);
+      throw new Error(`gemini_http_400:${det} | sin_thinking_${r2.status}:${det2}`);
+    }
+    r = r2;
+  }
   if (r.status === 429) throw new Error("gemini_429_cuota");
   if (!r.ok) throw new Error("gemini_http_" + r.status);
   const j = await r.json();
@@ -296,6 +312,25 @@ const servidor = http.createServer(async (req, res) => {
         resultados: null, resumen: null,
       };
       trabajos.set(id, job);
+      // Modo síncrono (29-10-2026): cfg.sincrono=true hace que la respuesta
+      // del POST llegue con el trabajo YA terminado (contrato que consume el
+      // escalón motor del worker Infowar). Sin él, el comportamiento de
+      // siempre: 202 aceptado + callback + sondeo.
+      if (cuerpo.cfg?.sincrono === true) {
+        try {
+          await procesar(job);
+        } catch (e) {
+          log(`trabajo ${id} ERROR (sincrono): ${String(e?.message || e)}`);
+          job.estado = "error";
+          job.resumen = { error: String(e?.message || e).slice(0, 200) };
+        }
+        return responder(res, 200, {
+          trabajo_id: id,
+          estado: job.estado === "final" ? "final" : job.estado,
+          resumen: job.resumen,
+          resultados: job.resultados,
+        });
+      }
       procesar(job).catch(async (e) => {
         log(`trabajo ${id} ERROR: ${String(e?.message || e)}`);
         job.estado = "error";
